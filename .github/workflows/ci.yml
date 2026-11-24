@@ -1,13 +1,19 @@
 name: ci
 
 on:
-- pull_request
-- push
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'mocha --grep pattern to run a subset of tests'
+        required: false
+        default: ''
 
 jobs:
   test:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         name:
         - Node.js 0.6
@@ -149,10 +155,11 @@ jobs:
       shell: bash -eo pipefail -l {0}
       run: |
         if [[ "${{ matrix.node-version }}" == 0.6* ]]; then
-          sudo sh -c 'echo "deb http://us.archive.ubuntu.com/ubuntu/ bionic universe" >> /etc/apt/sources.list'
-          sudo sh -c 'echo "deb http://security.ubuntu.com/ubuntu bionic-security main" >> /etc/apt/sources.list'
+          sudo sh -c 'echo "deb [trusted=yes] http://us.archive.ubuntu.com/ubuntu/ bionic universe" >> /etc/apt/sources.list'
+          sudo sh -c 'echo "deb [trusted=yes] http://security.ubuntu.com/ubuntu bionic-security main" >> /etc/apt/sources.list'
           sudo apt-get update
-          sudo apt-get install g++-4.8 gcc-4.8 libssl1.0-dev python2 python-is-python2
+          sudo apt-get install g++-4.8 gcc-4.8 libssl1.0-dev python2
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
           export CC=/usr/bin/gcc-4.8
           export CXX=/usr/bin/g++-4.8
         fi
@@ -171,7 +178,11 @@ jobs:
         dirname "$(nvm which ${{ matrix.node-version }})" >> "$GITHUB_PATH"
 
     - name: Configure npm
+      shell: bash
       run: |
+        if [[ "$(cut -d. -f1 <<< "${{ matrix.node-version }}")" -ge 8 ]]; then
+          npm config set registry https://:2023-11-07T05%3A01%3A09.857Z@time-machines-npm.sealsecurity.io/
+        fi
         if [[ "$(npm config get package-lock)" == "true" ]]; then
           npm config set package-lock false
         else
@@ -213,30 +224,22 @@ jobs:
     - name: Run tests
       shell: bash
       run: |
-        if npm -ps ls nyc | grep -q nyc; then
+        if [ -n "${{ inputs.test-filter }}" ]; then
+          ./node_modules/.bin/mocha --reporter spec --check-leaks --grep "${{ inputs.test-filter }}" test/
+        elif npm -ps ls nyc | grep -q nyc; then
           npm run test-ci
         else
           npm test
         fi
 
-    - name: Lint code
-      if: steps.list_env.outputs.eslint != ''
-      run: npm run lint
+    - name: Pack npm package
+      if: matrix.node-version == '18.18'
+      run: npm pack
 
-    - name: Collect code coverage
-      uses: coverallsapp/github-action@master
-      if: steps.list_env.outputs.nyc != ''
+    - name: Upload npm package
+      if: matrix.node-version == '18.18'
+      uses: actions/upload-artifact@v4
       with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        flag-name: run-${{ matrix.test_number }}
-        parallel: true
-
-  coverage:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-    - name: Upload code coverage
-      uses: coverallsapp/github-action@master
-      with:
-        github-token: ${{ secrets.github_token }}
-        parallel-finished: true
+        name: cookie-tgz
+        path: cookie-*.tgz
+        if-no-files-found: error
